@@ -15,7 +15,7 @@ from eval.utils import (
 from eval.gsm.examplars import EXAMPLARS as GSM_EXAMPLARS
 
 
-exact_match = evaluate.load("exact_match")
+exact_match = evaluate.load("/apdcephfs/share_916081/shared_info/tingchenfu/Metric/exact_match.py")
 
 
 def main(args):

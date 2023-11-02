@@ -14,9 +14,11 @@ from eval.utils import (
     query_openai_chat_model,
     dynamic_import_function,
 )
+from peft import PeftModel
+from transformers import AutoModelForCausalLM
 
+exact_match = evaluate.load("/apdcephfs/share_916081/shared_info/tingchenfu/Metric/exact_match.py")
 
-exact_match = evaluate.load("exact_match")
 
 
 def main(args):
@@ -28,9 +30,9 @@ def main(args):
         with open(task_file, "r") as f:
             task_name = os.path.basename(task_file).split(".")[0]
             all_tasks[task_name] = json.load(f)["examples"]
+            print("task name {} has {} cases".format(task_name, len(all_tasks[task_name])))
             if args.max_num_examples_per_task:
-                all_tasks[task_name] = random.sample(all_tasks[task_name], args.max_num_examples_per_task)
-
+               all_tasks[task_name] = random.sample(all_tasks[task_name], args.max_num_examples_per_task)
     all_prompts = {}
     cot_prompt_files = glob.glob(os.path.join(args.data_dir, "cot-prompts", "*.txt"))
     for cot_prompt_file in tqdm.tqdm(cot_prompt_files, desc="Loading prompts"):
@@ -59,10 +61,18 @@ def main(args):
 
     # Load model if not using OpenAI API
     if args.model_name_or_path:
+        # prepare peft
+        if args.peft_path:
+            model = AutoModelForCausalLM.from_pretrained(args.model_name_or_path)
+            peft_model = PeftModel.from_pretrained(model, args.peft_path)
+            peft_model = peft_model.merge_and_unload()
+            peft_model.save_pretrained(os.path.join(args.peft_path,'peft_intergrated'))
+            print("PEFT intergrated!!")
+
         if args.use_vllm:
             print("Loading vllm model...")
             model = vllm.LLM(
-                model=args.model_name_or_path,
+                model=args.model_name_or_path  if args.peft_path is None else os.path.join(args.peft_path,'peft_intergrated'),
                 tokenizer=args.tokenizer_name_or_path if args.tokenizer_name_or_path else args.model_name_or_path,
                 tokenizer_mode="slow" if args.use_slow_tokenizer else "auto",
                 tensor_parallel_size=torch.cuda.device_count(),
@@ -71,7 +81,7 @@ def main(args):
         else:
             print("Loading model and tokenizer with huggingface...")
             model, tokenizer = load_hf_lm_and_tokenizer(
-                model_name_or_path=args.model_name_or_path, 
+                model_name_or_path=args.model_name_or_path if args.peft_path is None else os.path.join(args.peft_path,'peft_intergrated'), 
                 tokenizer_name_or_path=args.tokenizer_name_or_path, 
                 load_in_8bit=args.load_in_8bit, 
                 device_map="balanced_low_0" if torch.cuda.device_count() > 1 else "auto",
@@ -120,7 +130,7 @@ def main(args):
                     tokenizer=tokenizer,
                     prompts=prompts,
                     max_new_tokens=512,
-                    temperature=0,
+                    temperature=1.0,
                     batch_size=args.eval_batch_size if args.eval_batch_size else 1,
                     stop_id_sequences=[[stop_sequence]] 
                 )
@@ -174,6 +184,9 @@ def main(args):
         json.dump(performance, fout, indent=4)
 
 
+    if args.peft_path:
+        os.system('rm -rf   '+ os.path.join(args.peft_path,'peft_intergrated'))
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -188,6 +201,12 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--model_name_or_path", 
+        type=str, 
+        default=None, 
+        help="if specified, we will load the model to generate the predictions."
+    )
+    parser.add_argument(
+        "--peft_path", 
         type=str, 
         default=None, 
         help="if specified, we will load the model to generate the predictions."
